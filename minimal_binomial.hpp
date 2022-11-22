@@ -33,14 +33,16 @@ static constexpr std::array<const char*, 7> locations_array__ =
  " (in 'examples/bernoulli/bernoulli.stan', line 3, column 2 to column 34)"};
 
 
-
+using log_prob_function_ = std::function<float(std::vector<float>, std::vector<int>, std::ostream*)>;
 
 class bernoulli_model final : public model_base_crtp<bernoulli_model> {
 
  private:
-  float N;
-  std::vector<float> y; 
+  // we may need to specialize this into data_int and data_float, but let's start here
   std::unordered_map<const char*, std::vector<float> > data;
+  // I wanted to make this a reference, but references can't be
+  // re-allocateed. Do I keep it as a copy, or do I switch to a pointer?
+  log_prob_function_ fcn; // turn into log_prob_impl
  
  public:
   ~bernoulli_model() { }
@@ -51,10 +53,11 @@ class bernoulli_model final : public model_base_crtp<bernoulli_model> {
     return std::vector<std::string>{"stanc_version = stanc3 v2.30.0-104-g5240321e", "stancflags = "};
   }
   
-  
   bernoulli_model(stan::io::var_context& context__,
+                  log_prob_function_ fcn,
                   unsigned int random_seed__ = 0,
-                  std::ostream* pstream__ = nullptr) : model_base_crtp(0) {
+                  std::ostream* pstream__ = nullptr) :model_base_crtp(0) {
+    fcn = fcn;
     using local_scalar_t__ = double ;
     boost::ecuyer1988 base_rng__ = 
         stan::services::util::create_rng(random_seed__, 0);
@@ -65,8 +68,6 @@ class bernoulli_model final : public model_base_crtp<bernoulli_model> {
     (void) DUMMY_VAR__;  // suppress unused var warning
     int pos__ = std::numeric_limits<int>::min();
     pos__ = 1;
-    //N = 10;
-    //y = std::vector<float>{0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
     data["N"] = std::vector<float>{10};
     data["y"] = std::vector<float>{0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
     // TODO fix data loading
@@ -89,7 +90,7 @@ class bernoulli_model final : public model_base_crtp<bernoulli_model> {
     num_params_r__ = 1;
     
   }
-  
+
   template <bool propto__, bool jacobian__ , typename VecR, typename VecI, 
   stan::require_vector_like_t<VecR>* = nullptr, 
   stan::require_vector_like_vt<std::is_integral, VecI>* = nullptr> 
@@ -339,16 +340,15 @@ class bernoulli_model final : public model_base_crtp<bernoulli_model> {
     
 };
 }
-using stan_model = bernoulli_model_namespace::bernoulli_model;
-
 #ifndef USING_R
 
 // Boilerplate
-stan::model::model_base& new_model(
+bernoulli_model_namespace::bernoulli_model& new_model(
         stan::io::var_context& data_context,
+        bernoulli_model_namespace::log_prob_function_ fcn,
         unsigned int seed,
         std::ostream* msg_stream) {
-  stan_model* m = new stan_model(data_context, seed, msg_stream);
+    bernoulli_model_namespace::bernoulli_model* m = new bernoulli_model_namespace::bernoulli_model(data_context, fcn, seed, msg_stream);
   return *m;
 }
 
@@ -460,12 +460,11 @@ context_vector get_vec_var_context(const std::string &file, size_t num_chains) {
   return context_vector(num_chains, std::make_shared<dump>(dump(stream)));
 }
 
-
-
 int main() {
     // https://mc-stan.org/docs/2_23/reference-manual/hmc-algorithm-parameters.html
+    auto fcn = [](std::vector<float>, std::vector<int>, std::ostream*){return 0.0;};
     std::shared_ptr<stan::io::var_context> var_context = get_var_context("examples/bernoulli/bernoulli.data.json");
-    stan::model::model_base &model = new_model(*var_context, 0, &std::cout);
+    bernoulli_model_namespace::bernoulli_model &model = new_model(*var_context, fcn, 0, &std::cout);
     std::string init = "foo";
     int num_chains = 1;
     std::vector<std::shared_ptr<stan::io::var_context>> init_contexts = get_vec_var_context(init, num_chains);
