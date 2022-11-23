@@ -7,6 +7,7 @@
 #include <functional>
 #include <variant>
 #include <utility>
+#include <algorithm>
 #include <stan/callbacks/interrupt.hpp>
 #include <stan/callbacks/logger.hpp>
 #include <stan/callbacks/stream_logger.hpp>
@@ -32,8 +33,7 @@ static constexpr std::array<const char*, 7> locations_array__ =
  " (in 'examples/bernoulli/bernoulli.stan', line 3, column 8 to column 9)",
  " (in 'examples/bernoulli/bernoulli.stan', line 3, column 2 to column 34)"};
 
-
-using log_prob_function_ = std::function<float(std::vector<float>, std::vector<int>, std::ostream*)>;
+using log_prob_function_ = std::function<double(std::vector<stan::math::var_value<double>>, std::vector<stan::math::var_value<double>>, std::ostream*)>;
 
 class bernoulli_model final : public model_base_crtp<bernoulli_model> {
 
@@ -56,7 +56,7 @@ class bernoulli_model final : public model_base_crtp<bernoulli_model> {
   bernoulli_model(stan::io::var_context& context__,
                   log_prob_function_ fcn,
                   unsigned int random_seed__ = 0,
-                  std::ostream* pstream__ = nullptr) :model_base_crtp(0) {
+                  std::ostream* pstream__ = nullptr): model_base_crtp(0) {
     fcn = fcn;
     using local_scalar_t__ = double ;
     boost::ecuyer1988 base_rng__ = 
@@ -90,6 +90,22 @@ class bernoulli_model final : public model_base_crtp<bernoulli_model> {
     num_params_r__ = 1;
     
   }
+
+  /*template <bool propto__, bool jacobian__ , typename VecR, typename VecI, 
+  stan::require_vector_like_t<VecR>* = nullptr, 
+  stan::require_vector_like_vt<std::is_integral, VecI>* = nullptr> 
+  inline stan::scalar_type_t<VecR> log_prob_impl_2(VecR& params_r__,
+                                                 VecI& params_i__,
+                                                 std::ostream* pstream__ = nullptr) const {
+      std::vector<stan::math::var_value<double>> real_array;
+      std::vector<stan::math::var_value<int>> int_array;
+      std::copy(params_r__.begin(), params_r__.end(), real_array.begin());
+      std::copy(params_i__.begin(), params_i__.end(), int_array.begin());
+      auto result = fcn(real_array, int_array, pstream__);
+      return result;
+      //return static_cast<stan::scalar_type_t<VecR>>(result);
+  }*/
+
 
   template <bool propto__, bool jacobian__ , typename VecR, typename VecI, 
   stan::require_vector_like_t<VecR>* = nullptr, 
@@ -293,7 +309,8 @@ class bernoulli_model final : public model_base_crtp<bernoulli_model> {
     inline T_ log_prob(Eigen::Matrix<T_,Eigen::Dynamic,1>& params_r,
                        std::ostream* pstream = nullptr) const {
       Eigen::Matrix<int, -1, 1> params_i;
-      return log_prob_impl<propto__, jacobian__>(params_r, params_i, pstream);
+      return 0;
+      //return log_prob_impl_2<propto__, jacobian__>(params_r, params_i, pstream);
     }
 
     template <bool propto__, bool jacobian__, typename T__>
@@ -462,7 +479,7 @@ context_vector get_vec_var_context(const std::string &file, size_t num_chains) {
 
 int main() {
     // https://mc-stan.org/docs/2_23/reference-manual/hmc-algorithm-parameters.html
-    auto fcn = [](std::vector<float>, std::vector<int>, std::ostream*){return 0.0;};
+    auto fcn = [](std::vector<stan::math::var_value<double>>, std::vector<stan::math::var_value<double>>, std::ostream*){return 0.0;};
     std::shared_ptr<stan::io::var_context> var_context = get_var_context("examples/bernoulli/bernoulli.data.json");
     bernoulli_model_namespace::bernoulli_model &model = new_model(*var_context, fcn, 0, &std::cout);
     std::string init = "foo";
