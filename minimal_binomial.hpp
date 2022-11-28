@@ -36,14 +36,14 @@ static constexpr std::array<const char*, 7> locations_array__ =
 using log_prob_function_ = std::function<
             double(std::vector<double>, 
                    std::vector<int>,  
-                   std::unordered_map<const char*, std::vector<float>>,
+                   std::unordered_map<const char*, std::vector<double>>,
                    std::ostream*)>;
 
 class bernoulli_model final : public model_base_crtp<bernoulli_model> {
 
  private:
   // we may need to specialize this into data_int and data_float, but let's start here
-  std::unordered_map<const char*, std::vector<float> > data;
+  std::unordered_map<const char*, std::vector<double> > data;
   // I wanted to make this a reference, but references can't be
   // re-allocateed. Do I keep it as a copy, or do I switch to a pointer?
   log_prob_function_ fcn; // turn into log_prob_impl
@@ -59,8 +59,9 @@ class bernoulli_model final : public model_base_crtp<bernoulli_model> {
   
   bernoulli_model(stan::io::var_context& context__,
                   log_prob_function_ &fcn,
+                  std::unordered_map<const char *, std::vector<double> > data,
                   unsigned int random_seed__ = 0,
-                  std::ostream* pstream__ = nullptr): fcn(fcn), model_base_crtp(0) {
+                  std::ostream* pstream__ = nullptr): fcn(fcn), data(data), model_base_crtp(0) {
     using local_scalar_t__ = double ;
     boost::ecuyer1988 base_rng__ = 
         stan::services::util::create_rng(random_seed__, 0);
@@ -71,9 +72,7 @@ class bernoulli_model final : public model_base_crtp<bernoulli_model> {
     (void) DUMMY_VAR__;  // suppress unused var warning
     int pos__ = std::numeric_limits<int>::min();
     pos__ = 1;
-    data["N"] = std::vector<float>{10};
-    data["y"] = std::vector<float>{0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
-    // TODO fix data loading
+   // TODO fix data loading
     /*context__.validate_dims("data initialization","N","int",
          std::vector<size_t>{});
     N = std::numeric_limits<int>::min();
@@ -373,9 +372,10 @@ class bernoulli_model final : public model_base_crtp<bernoulli_model> {
 bernoulli_model_namespace::bernoulli_model& new_model(
         stan::io::var_context& data_context,
         bernoulli_model_namespace::log_prob_function_ &fcn,
+        std::unordered_map<const char*, std::vector<double>> &data,
         unsigned int seed,
         std::ostream* msg_stream) {
-    bernoulli_model_namespace::bernoulli_model* m = new bernoulli_model_namespace::bernoulli_model(data_context, fcn, seed, msg_stream);
+    bernoulli_model_namespace::bernoulli_model* m = new bernoulli_model_namespace::bernoulli_model(data_context, fcn, data, seed, msg_stream);
   return *m;
 }
 
@@ -491,7 +491,7 @@ int main() {
     // https://mc-stan.org/docs/2_23/reference-manual/hmc-algorithm-parameters.html
     bernoulli_model_namespace::log_prob_function_ fcn = [](std::vector<double> params_r__, 
                   std::vector<int> params_i__, 
-                  std::unordered_map<const char*, std::vector<float>> data, 
+                  std::unordered_map<const char*, std::vector<double>> data, 
                   std::ostream* pstream__){
         using T__ = double;
         using local_scalar_t__ = T__;
@@ -507,8 +507,15 @@ int main() {
         lp_accum__.add(lp__);
         return lp_accum__.sum();
     };
+
+    std::unordered_map<const char*, std::vector<double>> data;
+
+    data["N"] = std::vector<double>{10};
+    data["y"] = std::vector<double>{0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1};
+
     std::shared_ptr<stan::io::var_context> var_context = get_var_context("examples/bernoulli/bernoulli.data.json");
-    bernoulli_model_namespace::bernoulli_model &model = new_model(*var_context, fcn, 0, &std::cout);
+    bernoulli_model_namespace::bernoulli_model &model = new_model(*var_context, fcn, data, 0, &std::cout);
+
     std::string init = "foo";
     int num_chains = 1;
     std::vector<std::shared_ptr<stan::io::var_context>> init_contexts = get_vec_var_context(init, num_chains);
