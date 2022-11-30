@@ -42,11 +42,8 @@ using log_prob_function_ = std::function<
 class bernoulli_model final : public model_base_crtp<bernoulli_model> {
 
  private:
-  // we may need to specialize this into data_int and data_float, but let's start here
   std::unordered_map<const char*, std::vector<double> > data;
-  // I wanted to make this a reference, but references can't be
-  // re-allocateed. Do I keep it as a copy, or do I switch to a pointer?
-  log_prob_function_ fcn; // turn into log_prob_impl
+  log_prob_function_ fcn;
  
  public:
   ~bernoulli_model() { }
@@ -85,7 +82,6 @@ class bernoulli_model final : public model_base_crtp<bernoulli_model> {
          std::vector<size_t>{static_cast<size_t>(N)});
     y = std::vector<int>(N, std::numeric_limits<int>::min());
     
-    
     y = context__.vals_i("y");
     stan::math::check_greater_or_equal(function__, "y", y, 0);
     stan::math::check_less_or_equal(function__, "y", y, 1);*/
@@ -111,6 +107,10 @@ class bernoulli_model final : public model_base_crtp<bernoulli_model> {
       for (auto &item : params_r__) {
           dbl_array.push_back(deref(item));
       }
+      // TODO trace lp output in full program and see how it gets written out to output.csv
+      // since maybe I'm missing something somewhere; I'm calculating a logprob of -17
+      // but it's writing out 0, which suggests to me that it's not making into the next
+      // run of the loop somehow. How should it be passed around?
       auto result = fcn(dbl_array, params_i__, data, pstream__);
       return result;
       //return static_cast<stan::scalar_type_t<VecR>>(result);
@@ -314,12 +314,24 @@ class bernoulli_model final : public model_base_crtp<bernoulli_model> {
         emit_transformed_parameters, emit_generated_quantities, pstream);
     }
 
+    double strip_var(double x) const {
+        return x;
+    }
+
+    double strip_var(const stan::math::var_value<double>& x) const {
+        return x.val();
+    }
+
     template <bool propto__, bool jacobian__, typename T_>
     inline T_ log_prob(Eigen::Matrix<T_,Eigen::Dynamic,1>& params_r,
                        std::ostream* pstream = nullptr) const {
-      Eigen::Matrix<int, -1, 1> params_i;
-      return 0;
-      //return log_prob_impl_2<propto__, jacobian__>(params_r, params_i, pstream);
+      std::vector<int> params_i;
+      std::vector<double> vec{};
+      for (auto i=0; i<params_r.size(); i++) {
+          double d = strip_var(params_r(i,0));
+          vec.push_back(d);
+      }
+      return log_prob_impl_2<propto__, jacobian__>(vec, params_i, pstream);
     }
 
     template <bool propto__, bool jacobian__, typename T__>
@@ -345,9 +357,9 @@ class bernoulli_model final : public model_base_crtp<bernoulli_model> {
                               std::vector<double>& vars,
                               std::ostream* pstream__ = nullptr) const {
      constexpr std::array<const char*, 1> names__{"theta"};
-      const std::array<Eigen::Index, 1> constrain_param_sizes__{1};
-      const auto num_constrained_params__ = std::accumulate(
-        constrain_param_sizes__.begin(), constrain_param_sizes__.end(), 0);
+     const std::array<Eigen::Index, 1> constrain_param_sizes__{1};
+     const auto num_constrained_params__ = std::accumulate(
+     constrain_param_sizes__.begin(), constrain_param_sizes__.end(), 0);
     
      std::vector<double> params_r_flat__(num_constrained_params__);
      Eigen::Index size_iter__ = 0;
@@ -500,10 +512,10 @@ int main() {
         stan::io::deserializer<local_scalar_t__> in__(params_r__, params_i__);
         local_scalar_t__ DUMMY_VAR__(std::numeric_limits<double>::quiet_NaN());
         local_scalar_t__ theta = DUMMY_VAR__;
-        theta = in__.template read_constrain_lub<local_scalar_t__,false>(
+        theta = in__.template read_constrain_lub<local_scalar_t__, true>(
                     0, 1, lp__);
-        lp_accum__.add(stan::math::beta_lpdf<false>(theta, 1, 1));
-        lp_accum__.add(stan::math::bernoulli_lpmf<false>(data.at("y"), theta));
+        lp_accum__.add(stan::math::beta_lpdf<true>(theta, 1, 1));
+        lp_accum__.add(stan::math::bernoulli_lpmf<true>(data.at("y"), theta));
         lp_accum__.add(lp__);
         return lp_accum__.sum();
     };
@@ -511,7 +523,7 @@ int main() {
     std::unordered_map<const char*, std::vector<double>> data;
 
     data["N"] = std::vector<double>{10};
-    data["y"] = std::vector<double>{0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1};
+    data["y"] = std::vector<double>{0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
 
     std::shared_ptr<stan::io::var_context> var_context = get_var_context("examples/bernoulli/bernoulli.data.json");
     bernoulli_model_namespace::bernoulli_model &model = new_model(*var_context, fcn, data, 0, &std::cout);
@@ -541,7 +553,7 @@ int main() {
                                         std::cerr, std::cerr);
     stan::callbacks::writer init_writer;
     stan::callbacks::interrupt interrupt;
-    stan::callbacks::writer sample_writer;
+    stan::callbacks::stream_writer sample_writer(std::cerr); // print out results to stderr for now
     stan::callbacks::writer diagnostic_writer;
     auto return_code = stan::services::sample::hmc_static_unit_e(
             model, *(init_contexts[0]), random_seed, id, init_radius,
