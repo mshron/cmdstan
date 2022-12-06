@@ -34,7 +34,8 @@ static constexpr std::array<const char*, 7> locations_array__ =
  " (in 'examples/bernoulli/bernoulli.stan', line 3, column 2 to column 34)"};
 
 using log_prob_function_ = std::function<
-            double(std::vector<double>, 
+            stan::math::var_value<double>(
+                   std::vector<stan::math::var_value<double>>, 
                    std::vector<int>,  
                    std::unordered_map<const char*, std::vector<double>>,
                    std::ostream*)>;
@@ -89,12 +90,12 @@ class bernoulli_model final : public model_base_crtp<bernoulli_model> {
     
   }
 
-  double deref(double x) const {
-      return x;
+  stan::math::var_value<double> deref(double x) const {
+      return stan::math::var_value<double>(x);
   }
 
-  double deref(stan::math::var x) const {
-      return x.val();
+  stan::math::var_value<double> deref(stan::math::var x) const {
+      return x;
   }
 
   template <bool propto__, bool jacobian__ , typename VecR, typename VecI, 
@@ -103,16 +104,12 @@ class bernoulli_model final : public model_base_crtp<bernoulli_model> {
   inline stan::scalar_type_t<VecR> log_prob_impl_2(VecR& params_r__,
                                                  VecI& params_i__,
                                                  std::ostream* pstream__ = nullptr) const {
-      std::vector<double> dbl_array;
+      std::vector<stan::math::var_value<double>> var_array;
       for (auto &item : params_r__) {
-          dbl_array.push_back(deref(item));
+          var_array.push_back(deref(item));
       }
-      // TODO trace lp output in full program and see how it gets written out to output.csv
-      // since maybe I'm missing something somewhere; I'm calculating a logprob of -17
-      // but it's writing out 0, which suggests to me that it's not making into the next
-      // run of the loop somehow. How should it be passed around?
-      auto result = fcn(dbl_array, params_i__, data, pstream__);
-      return result;
+      auto result = fcn(var_array, params_i__, data, pstream__);
+      return result.val();
       //return static_cast<stan::scalar_type_t<VecR>>(result);
   }
 
@@ -501,11 +498,11 @@ context_vector get_vec_var_context(const std::string &file, size_t num_chains) {
 
 int main() {
     // https://mc-stan.org/docs/2_23/reference-manual/hmc-algorithm-parameters.html
-    bernoulli_model_namespace::log_prob_function_ fcn = [](std::vector<double> params_r__, 
+    bernoulli_model_namespace::log_prob_function_ fcn = [](std::vector<stan::math::var_value<double>> params_r__, 
                   std::vector<int> params_i__, 
                   std::unordered_map<const char*, std::vector<double>> data, 
                   std::ostream* pstream__){
-        using T__ = double;
+        using T__ = stan::math::var_value<double>;
         using local_scalar_t__ = T__;
         T__ lp__(0.0);
         stan::math::accumulator<T__> lp_accum__;
