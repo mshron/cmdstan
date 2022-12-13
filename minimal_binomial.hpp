@@ -8,6 +8,7 @@
 #include <variant>
 #include <utility>
 #include <algorithm>
+#include <deque>
 #include <stan/callbacks/interrupt.hpp>
 #include <stan/callbacks/logger.hpp>
 #include <stan/callbacks/stream_logger.hpp>
@@ -496,26 +497,292 @@ context_vector get_vec_var_context(const std::string &file, size_t num_chains) {
   return context_vector(num_chains, std::make_shared<dump>(dump(stream)));
 }
 
-int main() {
-    // https://mc-stan.org/docs/2_23/reference-manual/hmc-algorithm-parameters.html
-    bernoulli_model_namespace::log_prob_function_ fcn = [](std::vector<stan::math::var_value<double>> params_r__, 
-                  std::vector<int> params_i__, 
-                  std::unordered_map<const char*, std::vector<double>> data, 
-                  std::ostream* pstream__){
-        using T__ = stan::math::var_value<double>;
-        using local_scalar_t__ = T__;
-        T__ lp__(0.0);
-        stan::math::accumulator<T__> lp_accum__;
-        stan::io::deserializer<local_scalar_t__> in__(params_r__, params_i__);
-        local_scalar_t__ DUMMY_VAR__(std::numeric_limits<double>::quiet_NaN());
-        local_scalar_t__ theta = DUMMY_VAR__;
-        theta = in__.template read_constrain_lub<local_scalar_t__, true>(
-                    0, 1, lp__);
-        lp_accum__.add(stan::math::beta_lpdf<true>(theta, 1, 1));
-        lp_accum__.add(stan::math::bernoulli_lpmf<true>(data.at("y"), theta));
-        lp_accum__.add(lp__);
-        return lp_accum__.sum();
-    };
+namespace stan_interpreter {
+
+/*enum class token_type {not_parsed, empty, eof, distribution, name, var, real, 
+                 integer, data, args, expr, datablock, tilde,
+                 parametersblock, modelblock, stmts, stmt};*/
+
+
+enum class token_type {L, R, atom, literal_num, eof, root, empty};
+
+class token {
+    friend std::ostream& operator<<(std::ostream&, token const&);
+    private:
+        token_type t;
+        std::string str_value;
+        double dbl_value;
+        int line;
+        int pos;
+    public:
+        token(token_type t, 
+              std::string str_value, 
+              double dbl_value,
+              int line, 
+              int pos) :
+            t{t}, str_value{str_value}, dbl_value{dbl_value},
+            line{line}, pos{pos} {};
+        token(token_type t) : t{t} {};
+        token() {
+            t = token_type::empty;
+       }
+        token_type get_type() {
+            return t;
+        }
+        std::string get_str_value() {
+            return str_value;
+        }
+        double get_dbl_value() {
+            return dbl_value;
+        }
+        std::string to_string() const {
+            switch (t) {
+                case token_type::L: 
+                    return "LEFT";
+                case token_type::R:
+                    return "RIGHT";
+                case token_type::atom:
+                    return "ATOM(" + str_value + ")";
+                case token_type::literal_num:
+                    return "LIT_NUM(" + std::to_string(dbl_value) + ")";
+                case token_type::root:
+                    return "ROOT";
+                case token_type::eof:
+                    return "EOF";
+                case token_type::empty:
+                    return "EMPTY";
+                default:
+                    return "NotImplemented";
+            }
+        }
+};
+
+class scanner {
+    private:
+        int line = 0;
+        bool filled = false;
+    public:
+        std::deque<token> tokens {};
+        scanner() {}
+        bool isdigit(char ch) {
+            return  (ch >= 48 && ch <= 57) || ch == 46;
+        }
+        bool is_filled() {
+            return filled;
+        }
+        bool consume(token &out) {
+            if (tokens.size() == 0) {
+                return false;
+            } else {
+                out = tokens.front();
+                tokens.pop_front();
+                return true;
+            }
+        }
+        bool peek(token &out) {
+            if (tokens.size() == 0) {
+                return false;
+            } else {
+                out = tokens.front();
+                return true;
+            }
+
+        }
+        void read_line(std::string s) {
+            filled = true;
+            int pos = 0;
+            char ch = s[pos];
+            while(ch) {
+                if (ch == '(') {
+                    tokens.push_back(token(token_type::L, "", 0, line, pos));
+                    pos++;
+                    ch = s[pos];
+                } else if (ch == ')') {
+                    tokens.push_back(token(token_type::R, "", 0, line, pos));
+                    pos++;
+                    ch = s[pos];
+                } else if (isdigit(ch)) {
+                    std::string temp;
+                    int span = 0;
+                    while(isdigit(ch)) {
+                        temp += ch;
+                        span++;
+                        ch = s[pos+span];
+                    }
+                    tokens.push_back(token(token_type::literal_num, "",
+                                     stof(temp), line, pos));
+                    pos += span;
+                } else if (ch==' ' || ch ==0) {
+                    pos++;
+                    ch = s[pos];
+                } else {
+                    std::string temp;
+                    int span = 0;
+                    while(ch!=' ' && ch!=0 && ch!=')') {
+                        temp += ch;
+                        span++;
+                        ch = s[pos+span];
+                    }
+                    tokens.push_back(token(token_type::atom,
+                                     temp, 0, line, pos));
+                    pos += span;
+                }
+            }
+            line++;
+        }
+};
+
+
+std::ostream &operator<<(std::ostream &os, token const &tok) {
+    return os << tok.to_string();
+}
+
+class AST {
+    private:
+        token node;
+        std::vector<AST> children;
+        int depth = 0;
+    public:
+        AST find_node(std::string);
+        AST(token node) : node{node} {
+            children = std::vector<AST> {};
+        };
+        AST(token node, std::vector<AST> children) : node{node}, children{children} {}
+        std::string to_string() {
+            std::string out = node.to_string();
+            if (children.size() > 0) {
+                out += "\n";
+            }
+            for (auto &c : children) {
+                for (int i = 0; i<=depth; i++) {
+                    out += " ";
+                }
+                out += c.to_string() + "\n";
+            }
+            return out;
+        }
+        AST(scanner &scan, int d = 0) {
+            if (!scan.is_filled()) {
+                throw "Scanner needs to be filled before we can make AST";
+            }
+            token temp;
+            if (!scan.peek(temp)) {
+                throw "Error, pulling from past scanner end";
+            }
+            depth = d;
+            token tok;
+            node = tok;
+            bool ok = scan.consume(tok);
+            if (!ok) {
+                throw "Error consuming token";
+            }
+            switch (tok.get_type()) {
+                case token_type::atom:
+                    node = tok;
+                    return;
+                case token_type::literal_num:
+                    node = tok;
+                    return;
+                case token_type::L:
+                    scan.consume(tok);
+                    node = tok;
+                    if (node.get_type() == token_type::R) {
+                        node = token();
+                        return;
+                    }
+                    scan.peek(temp);
+                    while (temp.get_type() != token_type::R) {
+                        add_child(AST(scan, d+1));
+                        scan.peek(temp);
+                    }
+                    scan.consume(tok);
+                    return;
+                default:
+                    throw "Not implemented";
+                }
+        }
+            
+        void add_child (AST child) {
+            children.push_back(child);
+        }
+};
+
+class parser {
+
+};
+
+/*class action {
+
+};
+
+class add : public action {
+    
+};
+
+class tree_walk {
+    private:
+        std::unordered_map<string, &action> actions;
+        ast my_ast;
+        std::unordered_map<std::string, std::vector<stan::math::var_value<double>> &var_values;
+    public:
+        tree_walk(std::unordered_map<string, &action> actions,
+                  ast my_ast,
+                  std::unordered_map<std::string, std::vector<stan::math::var_value<double>> &var_values) : 
+            actions{actions}, my_ast{my_ast}, var_values{var_values} {};
+};
+
+class model {
+    tree_walk data;
+    tree_walk parameters;
+    tree_walk model;
+    std::unordered_map<std::string, std::vector<stan::math::var_value<double>> var_values;
+};*/
+
+
+class log_prob_generator {
+    using T = stan::math::var_value<double>;
+    private:
+        std::vector<token> stack {};
+    public:
+        log_prob_generator() {};
+        T operator()(
+                std::vector<stan::math::var_value<double>> params_r__, 
+                std::vector<int> params_i__, 
+                std::unordered_map<const char*, std::vector<double>> data, 
+                std::ostream* pstream__) {
+            T lp__(0.0);
+            stan::math::accumulator<T> lp_accum__;
+            stan::io::deserializer<T> in__(params_r__, params_i__);
+            T  DUMMY_VAR__(std::numeric_limits<double>::quiet_NaN());
+            T theta = DUMMY_VAR__;
+            theta = in__.template read_constrain_lub<T, true>(0, 1, lp__);
+            lp_accum__.add(stan::math::beta_lpdf<true>(theta, 1, 1));
+            lp_accum__.add(stan::math::bernoulli_lpmf<true>(data.at("y"), theta));
+            lp_accum__.add(lp__);
+            return lp_accum__.sum();
+        }
+
+};
+
+}
+
+int main(int argc, char **argv) {
+    stan_interpreter::scanner s;
+    std::string input;
+    std::ifstream file(argv[1]);
+    while (getline(file, input)) {
+        s.read_line(input);
+    }
+    for (auto &el : s.tokens) {
+        std::cout<<el<<" ";
+    }
+    std::cout<<"\n";
+    stan_interpreter::AST test(s);
+    std::cout<<test.to_string();
+}
+
+void run_model() {
+    bernoulli_model_namespace::log_prob_function_ fcn = stan_interpreter::log_prob_generator();
 
     std::unordered_map<const char*, std::vector<double>> data;
 
@@ -526,6 +793,7 @@ int main() {
     bernoulli_model_namespace::bernoulli_model &model = new_model(*var_context, fcn, data, 0, &std::cout);
 
     std::string init = "foo";
+    // https://mc-stan.org/docs/2_23/reference-manual/hmc-algorithm-parameters.html
     int num_chains = 1;
     std::vector<std::shared_ptr<stan::io::var_context>> init_contexts = get_vec_var_context(init, num_chains);
     unsigned int random_seed = 0;
