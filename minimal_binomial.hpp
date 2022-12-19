@@ -9,6 +9,7 @@
 #include <utility>
 #include <algorithm>
 #include <deque>
+#include <memory>
 #include <stan/callbacks/interrupt.hpp>
 #include <stan/callbacks/logger.hpp>
 #include <stan/callbacks/stream_logger.hpp>
@@ -570,11 +571,12 @@ class scanner {
         bool is_filled() {
             return filled;
         }
-        bool consume(token &out) {
-            if (tokens.size() == 0) {
+        bool consume(token_type t) {
+            token temp;
+            peek(temp);
+            if (tokens.size() == 0 || temp.get_type() != t) {
                 return false;
             } else {
-                out = tokens.front();
                 tokens.pop_front();
                 return true;
             }
@@ -638,77 +640,71 @@ std::ostream &operator<<(std::ostream &os, token const &tok) {
 }
 
 class AST {
-    private:
-        token node;
-        std::vector<AST> children;
+    protected:
+        std::vector<std::unique_ptr<AST>> nodes;
         int depth = 0;
     public:
-        AST find_node(std::string);
-        AST(token node) : node{node} {
-            children = std::vector<AST> {};
-        };
-        AST(token node, std::vector<AST> children) : node{node}, children{children} {}
-        std::string to_string() {
-            std::string out = node.to_string();
-            if (children.size() > 0) {
-                out += "\n";
-            }
-            for (auto &c : children) {
-                for (int i = 0; i<=depth; i++) {
+        virtual ~AST() = default;
+        virtual std::string to_string() = 0 ;
+        auto operator[](int i) const {
+            return nodes[i].get();
+        }
+        int size() {
+            return nodes.size();
+        }
+        int get_depth() {
+            return depth;
+        }
+        std::string pprint_string() {
+            std::string out = to_string();
+            for (auto &c : nodes) {
+                for (int i = 0; i<=get_depth(); i++) {
                     out += " ";
                 }
-                out += c.to_string() + "\n";
+                out += c->to_string() + "\n";
             }
             return out;
+
         }
-        AST(scanner &scan, int d = 0) {
+};
+
+auto find_nodes(AST &a) {};
+
+class Expr : public AST {
+    public:
+        ~Expr() {};
+};
+
+class RealNumeral : public Expr {
+    private:
+        double num;
+    public:
+        RealNumeral(double num) : num{num} {};
+        ~RealNumeral() {};
+        std::string to_string() {
+            return std::to_string(num);
+        }
+};
+
+class parser {
+    public:
+        auto parse(scanner &scan, int d = 0) {
             if (!scan.is_filled()) {
                 throw "Scanner needs to be filled before we can make AST";
             }
-            token temp;
-            if (!scan.peek(temp)) {
+            token tok;
+            if (!scan.peek(tok)) {
                 throw "Error, pulling from past scanner end";
             }
-            depth = d;
-            token tok;
-            node = tok;
-            bool ok = scan.consume(tok);
-            if (!ok) {
-                throw "Error consuming token";
-            }
             switch (tok.get_type()) {
-                case token_type::atom:
-                    node = tok;
-                    return;
                 case token_type::literal_num:
-                    node = tok;
-                    return;
-                case token_type::L:
-                    scan.consume(tok);
-                    node = tok;
-                    if (node.get_type() == token_type::R) {
-                        node = token();
-                        return;
-                    }
-                    scan.peek(temp);
-                    while (temp.get_type() != token_type::R) {
-                        add_child(AST(scan, d+1));
-                        scan.peek(temp);
-                    }
-                    scan.consume(tok);
-                    return;
+                    scan.consume(token_type::literal_num);
+                    return std::make_unique<RealNumeral>(tok.get_dbl_value());
                 default:
                     throw "Not implemented";
                 }
         }
             
-        void add_child (AST child) {
-            children.push_back(child);
-        }
-};
-
-class parser {
-
 };
 
 /*class action {
@@ -777,8 +773,9 @@ int main(int argc, char **argv) {
         std::cout<<el<<" ";
     }
     std::cout<<"\n";
-    stan_interpreter::AST test(s);
-    std::cout<<test.to_string();
+    stan_interpreter::parser p;
+    auto test = p.parse(s);
+    std::cout<<"Parsed:\n"<<test->pprint_string();
 }
 
 void run_model() {
